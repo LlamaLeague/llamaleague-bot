@@ -29,10 +29,10 @@ sb = create_client(
 
 # ─── Mapas de constantes ───────────────────────────────────────────────────────
 SERVER_MAP = {
-    'peru':      EServerRegion.SouthAmerica,
-    'chile':     EServerRegion.SouthAmerica,
+    'peru':      EServerRegion.Chile,
+    'chile':     EServerRegion.Chile,
     'brazil':    EServerRegion.Brazil,
-    'argentina': EServerRegion.SouthAmerica,
+    'argentina': EServerRegion.Argentina,
     'us_east':   EServerRegion.USEast,
 }
 MODE_MAP = {
