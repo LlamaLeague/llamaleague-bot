@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 import steam.client
 import dota2.client
-
+from dota2.enums import DOTA_GameMode, DOTALobbyVisibility
 
 load_dotenv('../.env.local')
 
@@ -36,10 +36,10 @@ SERVER_MAP = {
     'us_east':   1,
 }
 MODE_MAP = {
-    'ap':    DOTA_GameMode.DOTA_GAMEMODE_AP,
-    'cm':    DOTA_GameMode.DOTA_GAMEMODE_CM,
-    'turbo': DOTA_GameMode.DOTA_GAMEMODE_TURBO,
-    'ar':    DOTA_GameMode.DOTA_GAMEMODE_AR,
+    'ap':    1,   # All Pick
+    'cm':    2,   # Captains Mode
+    'turbo': 23,  # Turbo
+    'ar':    5,   # All Random
 }
 
 # ─── Estado global ─────────────────────────────────────────────────────────────
