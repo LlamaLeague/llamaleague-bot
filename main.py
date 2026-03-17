@@ -32,7 +32,7 @@ SERVER_MAP = {
     'peru':      EServerRegion.Chile,
     'chile':     EServerRegion.Chile,
     'brazil':    EServerRegion.Brazil,
-    'argentina': EServerRegion.Argentina,
+    'argentina': EServerRegion.Chile,
     'us_east':   EServerRegion.USEast,
 }
 MODE_MAP = {
