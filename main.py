@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 import steam.client
 import dota2.client
-from dota2.enums import DOTA_GameMode, DOTALobbyVisibility, EServerRegion
+
 
 load_dotenv('../.env.local')
 
@@ -29,11 +29,11 @@ sb = create_client(
 
 # ─── Mapas de constantes ───────────────────────────────────────────────────────
 SERVER_MAP = {
-    'peru':      EServerRegion.Chile,
-    'chile':     EServerRegion.Chile,
-    'brazil':    EServerRegion.Brazil,
-    'argentina': EServerRegion.Chile,
-    'us_east':   EServerRegion.USEast,
+    'peru':      7,
+    'chile':     7,
+    'brazil':    14,
+    'argentina': 7,
+    'us_east':   1,
 }
 MODE_MAP = {
     'ap':    DOTA_GameMode.DOTA_GAMEMODE_AP,
@@ -169,7 +169,7 @@ def crear_lobby_dota2(sala):
         password  = sala['password'],
         options   = {
             'game_name':        f"LlamaLeague | {sala['password']}",
-            'server_region':    SERVER_MAP.get(sala['server'], EServerRegion.SouthAmerica),
+            'server_region': SERVER_MAP.get(sala['server'], 7),
             'game_mode':        MODE_MAP.get(sala['mode'], DOTA_GameMode.DOTA_GAMEMODE_AP),
             'allow_cheats':     False,
             'fill_with_bots':   False,
