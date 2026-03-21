@@ -80,13 +80,22 @@ def poll_wo():
         time.sleep(15)
 
 def poll_heartbeat():
+    global active_sala_id, wo_timer
     while True:
         try:
+            # Si hay sala activa en memoria, verificar que sigue válida en DB
+            if active_sala_id:
+                check = sb.table('lobbies').select('status').eq('id', active_sala_id).execute()
+                if not check.data or check.data[0]['status'] not in ('waiting', 'active'):
+                    log.info(f'Sala {active_sala_id} ya no activa. Liberando.')
+                    if wo_timer: wo_timer.cancel()
+                    active_sala_id = None
+            
             res = sb.table('lobbies').select('*', count='exact').in_('status', ['waiting','active']).execute()
             log.info(f'Heartbeat | sala: {active_sala_id or "ninguna"} | DB: {res.count or 0}')
         except Exception as e:
             log.error(f'Heartbeat: {e}')
-        time.sleep(60)
+        time.sleep(15)  # cada 15s en vez de 60s
 
 def poll_invites():
     global jugadores_invitados, active_sala_id
