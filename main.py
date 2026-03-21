@@ -1,6 +1,4 @@
-# main.py — LlamaLeague Bot v3
-# Invita jugadores directamente en Dota 2 cuando confirman asistencia
-
+# main.py — LlamaLeague Bot v4
 import os, time, logging, threading
 from dotenv import load_dotenv
 from supabase import create_client
@@ -9,29 +7,21 @@ import dota2.client
 from dota2.enums import DOTA_GameMode, DOTALobbyVisibility
 
 load_dotenv('../.env.local')
-
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(message)s', datefmt='%H:%M:%S')
 log = logging.getLogger('bot')
 
 sb = create_client(os.environ['NEXT_PUBLIC_SUPABASE_URL'], os.environ['SUPABASE_SERVICE_KEY'])
 
-SERVER_MAP = {
-    'peru':      3,
-    'chile':     3,
-    'brazil':    14,
-    'argentina': 3,
-    'us_east':   1,
-}
-MODE_MAP = {'ap': 1, 'cm': 2, 'turbo': 23, 'ar': 5}
+SERVER_MAP = {'peru': 12, 'chile': 12, 'brazil': 14, 'argentina': 12, 'us_east': 1}
+MODE_MAP   = {'ap': 1, 'cm': 2, 'turbo': 23, 'ar': 5}
 
-active_sala_id   = None
-wo_timer         = None
-jugadores_invitados = set()  # SteamIDs ya invitados en la sala actual
+active_sala_id      = None
+wo_timer            = None
+jugadores_invitados = set()
 
 steam_client = steam.client.SteamClient()
 dota_client  = dota2.client.Dota2Client(steam_client)
 
-# ─── Login ────────────────────────────────────────────────────────────────────
 @steam_client.on('logged_on')
 def on_logged_on():
     log.info('Login Steam OK. Lanzando Dota 2...')
@@ -55,7 +45,6 @@ def on_dota_ready():
     recuperar_sala_activa()
     start_polling()
 
-# ─── Recuperar sala activa tras reinicio ──────────────────────────────────────
 def recuperar_sala_activa():
     global active_sala_id, wo_timer
     res = sb.table('lobbies').select('*').eq('status', 'waiting').order('created_at').limit(1).execute()
@@ -63,15 +52,16 @@ def recuperar_sala_activa():
     sala = res.data[0]
     from datetime import datetime, timezone
     restantes = (datetime.fromisoformat(sala['wo_deadline'].replace('Z','+00:00')) - datetime.now(timezone.utc)).total_seconds()
+    # Si WO ya vencio o sala tiene mas de 1 hora — cancelar y no retomar
+    if restantes <= 0 or restantes > 3600:
+        log.info(f"Sala {sala['id']} inválida al reiniciar. Cancelando.")
+        sb.table('lobbies').update({'status': 'cancelled', 'ended_at': _now()}).eq('id', sala['id']).execute()
+        return
     active_sala_id = sala['id']
-    if restantes <= 0:
-        handle_wo(sala)
-    else:
-        log.info(f"Retomando sala {sala['id']}. WO en {int(restantes)}s")
-        wo_timer = threading.Timer(restantes, handle_wo, args=[sala])
-        wo_timer.start()
+    log.info(f"Retomando sala {sala['id']}. WO en {int(restantes)}s")
+    wo_timer = threading.Timer(restantes, handle_wo, args=[sala])
+    wo_timer.start()
 
-# ─── Polling ──────────────────────────────────────────────────────────────────
 def start_polling():
     threading.Thread(target=poll_queue,     daemon=True).start()
     threading.Thread(target=poll_wo,        daemon=True).start()
@@ -98,39 +88,42 @@ def poll_heartbeat():
             log.error(f'Heartbeat: {e}')
         time.sleep(60)
 
-# ─── Poll invitaciones ────────────────────────────────────────────────────────
-# Cada 5 segundos revisa jugadores confirmados y les envía invitación en Dota 2
 def poll_invites():
-    global jugadores_invitados
+    global jugadores_invitados, active_sala_id
     while True:
         if active_sala_id:
             try:
-                # Obtener jugadores confirmados con su steam_id
+                # Verificar que la sala sigue activa en DB
+                check = sb.table('lobbies').select('status').eq('id', active_sala_id).execute()
+                if not check.data or check.data[0]['status'] not in ('waiting', 'active'):
+                    log.info('Sala cancelada en DB. Liberando estado.')
+                    active_sala_id = None
+                    jugadores_invitados = set()
+                    time.sleep(5)
+                    continue
+
                 res = sb.table('lobby_players').select(
                     'user_id, users(steam_id)'
                 ).eq('lobby_id', active_sala_id).eq('confirmed', True).execute()
 
                 for p in (res.data or []):
-                    steam_id_str = p.get('users', {}).get('steam_id')
-                    if not steam_id_str:
-                        continue
+                    steam_id_str = (p.get('users') or {}).get('steam_id')
+                    if not steam_id_str: continue
                     steam_id = int(steam_id_str)
                     if steam_id not in jugadores_invitados:
                         try:
                             dota_client.invite_to_lobby(steam_id)
                             jugadores_invitados.add(steam_id)
-                            log.info(f'✓ Invitación enviada a SteamID: {steam_id}')
+                            log.info(f'✓ Invitación → SteamID: {steam_id}')
                         except Exception as e:
                             log.error(f'invite_to_lobby {steam_id}: {e}')
             except Exception as e:
                 log.error(f'poll_invites: {e}')
         else:
-            # Limpiar cuando no hay sala activa
             if jugadores_invitados:
                 jugadores_invitados = set()
         time.sleep(5)
 
-# ─── Queue ────────────────────────────────────────────────────────────────────
 def check_queue():
     try:
         res = sb.table('lobbies').select('*').eq('status', 'queued').order('created_at').limit(1).execute()
@@ -143,12 +136,10 @@ def check_queue():
 def procesar_sala(sala):
     global active_sala_id, wo_timer, jugadores_invitados
     active_sala_id = sala['id']
-    jugadores_invitados = set()  # reset para nueva sala
-
+    jugadores_invitados = set()
     from datetime import datetime, timezone, timedelta
     wo_deadline = (datetime.now(timezone.utc) + timedelta(minutes=sala['wo_timer'])).isoformat()
     sb.table('lobbies').update({'status': 'waiting', 'wo_deadline': wo_deadline}).eq('id', sala['id']).execute()
-
     try:
         crear_lobby_dota2(sala)
     except Exception as e:
@@ -156,36 +147,31 @@ def procesar_sala(sala):
         sb.table('lobbies').update({'status': 'queued'}).eq('id', sala['id']).execute()
         active_sala_id = None
         return
-
     wo_timer = threading.Timer(sala['wo_timer'] * 60, handle_wo, args=[sala])
     wo_timer.start()
     log.info(f"✓ Lobby listo. Pass: {sala['password']} | WO: {sala['wo_timer']}min")
 
-# ─── Crear lobby ──────────────────────────────────────────────────────────────
 def crear_lobby_dota2(sala):
     evento = threading.Event()
-
     def on_lobby_new(lobby):
         log.info(f"Lobby ID: {lobby.lobby_id}")
-        # Mover bot a espectador
         try:
             dota_client.join_practice_lobby_team(4)
             log.info('Bot → espectador OK')
         except Exception as e:
-            log.warning(f'join_team(4): {e}')
+            log.warning(f'join_team(4) falló: {e}')
             try:
                 dota_client.join_practice_lobby_broadcast_channel(0)
                 log.info('Bot → broadcast OK')
             except Exception as e2:
-                log.warning(f'broadcast(0): {e2}')
+                log.warning(f'broadcast(0) falló: {e2}')
         evento.set()
-
     dota_client.once('lobby_new', on_lobby_new)
     dota_client.create_practice_lobby(
         password=sala['password'],
         options={
-            'game_name':        f"LlamaLeague",
-            'server_region':    SERVER_MAP.get(sala['server'], 3),
+            'game_name':        'LlamaLeague',
+            'server_region':    SERVER_MAP.get(sala['server'], 12),
             'game_mode':        MODE_MAP.get(sala['mode'], 1),
             'allow_cheats':     False,
             'fill_with_bots':   False,
@@ -197,27 +183,40 @@ def crear_lobby_dota2(sala):
         dota_client.remove_listener('lobby_new', on_lobby_new)
         raise TimeoutError('GC timeout 30s')
 
-# ─── Eventos lobby ────────────────────────────────────────────────────────────
 @dota_client.on('lobby_changed')
 def on_lobby_changed(lobby):
     if not active_sala_id: return
     try:
-        members = lobby.members or []
+        # Verificar status en DB primero
+        check = sb.table('lobbies').select('status').eq('id', active_sala_id).execute()
+        if not check.data or check.data[0]['status'] not in ('waiting', 'active'):
+            globals()['active_sala_id'] = None
+            return
+
+        # dota2 v1.1.0 puede usar 'all_members' o atributos directos
+        members = (getattr(lobby, 'all_members', None) or
+                   getattr(lobby, 'members', None) or [])
+        try:
+            members = list(members)
+        except:
+            members = []
+
+        # Loguear para debug
+        for m in members:
+            log.info(f'  member: team={getattr(m,"team","?")} id={getattr(m,"id","?")}')
+
         jugadores = [m for m in members if getattr(m, 'team', -1) in (0, 1)]
         count = len(jugadores)
-
-        log.info(f'Lobby: {count}/10 jugadores')
+        log.info(f'Jugadores en sala: {count}/10')
         sb.table('lobbies').update({'player_count': count}).eq('id', active_sala_id).execute()
 
         if count >= 10:
             if wo_timer: wo_timer.cancel()
-            res = sb.table('lobbies').select('status').eq('id', active_sala_id).execute()
-            if res.data and res.data[0]['status'] == 'waiting':
+            if check.data[0]['status'] == 'waiting':
                 iniciar_partida(active_sala_id)
     except Exception as e:
         log.error(f'lobby_changed: {e}')
 
-# ─── WO ───────────────────────────────────────────────────────────────────────
 def handle_wo(sala):
     global active_sala_id
     try:
@@ -249,7 +248,6 @@ def check_wo_deadlines():
     except Exception as e:
         log.error(f'check_wo_deadlines: {e}')
 
-# ─── Acciones ─────────────────────────────────────────────────────────────────
 def iniciar_partida(sala_id):
     global active_sala_id, wo_timer
     try: dota_client.launch_practice_lobby()
@@ -276,17 +274,9 @@ def reportar_resultado(sala_id, winner, community_id, players):
         ex_res = sb.table('ranking').select('id,points,wins,losses').eq('community_id', community_id).eq('user_id', p['user_id']).execute()
         ex = ex_res.data[0] if ex_res.data else None
         if ex:
-            sb.table('ranking').update({
-                'points': max(0, ex['points']+delta),
-                'wins':   ex['wins']+(1 if won else 0),
-                'losses': ex['losses']+(0 if won else 1)
-            }).eq('id', ex['id']).execute()
+            sb.table('ranking').update({'points': max(0,ex['points']+delta), 'wins': ex['wins']+(1 if won else 0), 'losses': ex['losses']+(0 if won else 1)}).eq('id', ex['id']).execute()
         else:
-            sb.table('ranking').insert({
-                'community_id': community_id, 'user_id': p['user_id'],
-                'points': max(0,1000+delta), 'wins': 1 if won else 0,
-                'losses': 0 if won else 1, 'season': 1
-            }).execute()
+            sb.table('ranking').insert({'community_id': community_id, 'user_id': p['user_id'], 'points': max(0,1000+delta), 'wins': 1 if won else 0, 'losses': 0 if won else 1, 'season': 1}).execute()
     all_res = sb.table('ranking').select('id,points').eq('community_id', community_id).order('points', desc=True).execute()
     for i, r in enumerate(all_res.data or []):
         sb.table('ranking').update({'position': i+1}).eq('id', r['id']).execute()
