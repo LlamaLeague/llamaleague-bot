@@ -266,7 +266,7 @@ def crear_lobby_dota2(sala):
     dota_client.create_practice_lobby(
         password=sala['password'],
         options={
-            'game_name':        f"LlamaLeague | {sala['password']}",
+            'game_name':        'LlamaLeague',
             'server_region':    SERVER_MAP.get(sala['server'], 21),  # default Peru
             'game_mode':        MODE_MAP.get(sala['mode'], 1),
             'allow_cheats':     False,
