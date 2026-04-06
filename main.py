@@ -36,8 +36,12 @@ sb = create_client(
 
 # ── Mapas Dota 2 ───────────────────────────────────────────────────────────────
 SERVER_MAP = {
-    'peru': 12, 'chile': 12, 'brazil': 14,
-    'argentina': 12, 'us_east': 1,
+    'peru':      21,  # Peru server propio
+    'chile':     20,  # Chile server propio
+    'brazil':    12,  # Brazil
+    'argentina': 23,  # Argentina server propio
+    'us_east':    2,  # US East
+    'us_west':    1,  # US West
 }
 MODE_MAP = {
     'ap': 1, 'cm': 2, 'turbo': 23, 'ar': 5,
@@ -75,11 +79,26 @@ def on_dota_ready():
 
 # ── Al reconectar: recuperar salas en curso ────────────────────────────────────
 def sincronizar_salas_activas():
+    # Destruir cualquier lobby viejo que el bot tenga abierto en Dota 2
+    try:
+        dota_client.destroy_lobby()
+        log.info('Lobby anterior destruido al arrancar.')
+    except:
+        pass
+
+    # Limpiar salas waiting con started_at != null que quedaron colgadas
+    # (bot se reinició mientras procesaba) — resetear para reintento
+    res0 = sb.table('lobbies').select('id') \
+        .eq('status', 'waiting').not_.is_('started_at', 'null').execute()
+    for sala in (res0.data or []):
+        sb.table('lobbies').update({'started_at': None}).eq('id', sala['id']).execute()
+        log.info(f"Sala colgada reseteada: {sala['id'][:8]}")
+
     # Salas waiting sin started_at = pendientes de crear lobby
     res = sb.table('lobbies').select('*') \
         .eq('status', 'waiting').is_('started_at', 'null').execute()
     for sala in (res.data or []):
-        log.info(f"Sala pendiente al reiniciar: {sala['id']}")
+        log.info(f"Sala pendiente al reiniciar: {sala['id'][:8]}")
         threading.Thread(target=procesar_sala, args=[sala], daemon=True).start()
 
     # Salas active = ya en partida, solo registrar en memoria
@@ -91,9 +110,10 @@ def sincronizar_salas_activas():
 
 # ── Polling ────────────────────────────────────────────────────────────────────
 def start_polling():
-    threading.Thread(target=poll_nuevas_salas, daemon=True).start()
-    threading.Thread(target=poll_invites,       daemon=True).start()
-    threading.Thread(target=poll_heartbeat,     daemon=True).start()
+    threading.Thread(target=poll_nuevas_salas,    daemon=True).start()
+    threading.Thread(target=poll_invites,          daemon=True).start()
+    threading.Thread(target=poll_heartbeat,        daemon=True).start()
+    threading.Thread(target=poll_cancelaciones,    daemon=True).start()
     log.info('Polling iniciado — esperando salas...')
 
 def poll_nuevas_salas():
@@ -164,6 +184,29 @@ def poll_heartbeat():
             log.error(f'heartbeat: {e}')
         time.sleep(60)
 
+def poll_cancelaciones():
+    """Detecta salas que el streamer canceló desde el frontend y destruye el lobby"""
+    while True:
+        try:
+            with salas_lock:
+                ids = list(salas_activas.keys())
+            for sala_id in ids:
+                res = sb.table('lobbies').select('status').eq('id', sala_id).execute()
+                if not res.data: continue
+                status = res.data[0]['status']
+                if status == 'cancelled':
+                    log.info(f'Sala {sala_id[:8]} cancelada desde frontend — destruyendo lobby...')
+                    try:
+                        dota_client.destroy_lobby()
+                        log.info('Lobby Dota2 destruido.')
+                    except Exception as e:
+                        log.warning(f'destroy_lobby: {e}')
+                    with salas_lock:
+                        salas_activas.pop(sala_id, None)
+        except Exception as e:
+            log.error(f'poll_cancelaciones: {e}')
+        time.sleep(5)
+
 # ── Procesar una sala ─────────────────────────────────────────────────────────
 def procesar_sala(sala):
     sala_id = sala['id']
@@ -224,7 +267,7 @@ def crear_lobby_dota2(sala):
         password=sala['password'],
         options={
             'game_name':        f"LlamaLeague | {sala['password']}",
-            'server_region':    SERVER_MAP.get(sala['server'], 12),
+            'server_region':    SERVER_MAP.get(sala['server'], 21),  # default Peru
             'game_mode':        MODE_MAP.get(sala['mode'], 1),
             'allow_cheats':     False,
             'fill_with_bots':   False,
