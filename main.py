@@ -312,18 +312,43 @@ def on_lobby_changed(lobby):
             sb.table('lobbies').update({'player_count': count}).eq('id', sala_id).execute()
             log.info(f'Sala {sala_id[:8]}: {count}/10 jugadores')
 
-            # Actualizar equipos en DB según posición en Dota 2
+            # Sincronizar jugadores en DB desde Dota 2
             for m in jugadores:
                 steam_id_str = str(getattr(m, 'id', None) or '')
                 if not steam_id_str: continue
+                # Ignorar el bot mismo
+                if steam_id_str == str(getattr(steam_client, 'steam_id', '')):
+                    continue
                 team = 'radiant' if getattr(m, 'team', -1) == 0 else 'dire'
+                # Buscar usuario por steam_id
                 user_res = sb.table('users').select('id') \
                     .eq('steam_id', steam_id_str).execute()
-                if user_res.data:
+                if not user_res.data:
+                    continue
+                user_id = user_res.data[0]['id']
+                # Ver si ya está en lobby_players
+                existing = sb.table('lobby_players') \
+                    .select('id') \
+                    .eq('lobby_id', sala_id) \
+                    .eq('user_id', user_id).execute()
+                if existing.data:
+                    # Solo actualizar equipo
                     sb.table('lobby_players') \
-                        .update({'team': team}) \
+                        .update({'team': team, 'confirmed': True}) \
                         .eq('lobby_id', sala_id) \
-                        .eq('user_id', user_res.data[0]['id']).execute()
+                        .eq('user_id', user_id).execute()
+                else:
+                    # Insertar — entró directo por contraseña
+                    try:
+                        sb.table('lobby_players').insert({
+                            'lobby_id':  sala_id,
+                            'user_id':   user_id,
+                            'team':      team,
+                            'confirmed': True,
+                        }).execute()
+                        log.info(f'Jugador añadido desde Dota2: {user_id[:8]} → {team}')
+                    except Exception as e:
+                        log.warning(f'insert lobby_player: {e}')
 
         # 10 jugadores → iniciar automáticamente
         if count >= 10:
